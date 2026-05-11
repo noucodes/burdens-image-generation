@@ -16,7 +16,7 @@ const AI_GENERATABLE_SLOTS: ImageSlot[] = [2, 3];
 const REQUEST_INTERVAL_MS = 7_500;   // ~8 RPM — safely under the 10 RPM free-tier limit
 const PER_MINUTE_BACKOFF_MS = 65_000; // base wait on per-minute rate limit
 const MAX_RETRIES_PER_ITEM = 2;       // max error retries (not rate-limit retries)
-const MAX_RATE_LIMIT_RETRIES = 4;     // max times to back off and retry a single item
+const MAX_RATE_LIMIT_RETRIES = 1;     // wait once and retry; if still limited, skip and resume next run
 
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));

@@ -82,7 +82,7 @@ export async function POST(req: Request) {
 
         const INTERVAL_MS = 7_500;
         const BASE_BACKOFF_MS = 65_000;
-        const MAX_RL_RETRIES = 4;
+        const MAX_RL_RETRIES = 1;
 
         let generated = 0;
 
