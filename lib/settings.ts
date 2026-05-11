@@ -1,7 +1,19 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
-const SETTINGS_PATH = join(process.cwd(), 'settings.json');
+/** /tmp on serverless (Vercel/Lambda), process.cwd() for local dev */
+export function writableDir(): string {
+  if (
+    process.env.VERCEL === '1' ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.cwd().startsWith('/var/')
+  ) {
+    return '/tmp';
+  }
+  return process.cwd();
+}
+
+const SETTINGS_PATH = join(writableDir(), 'settings.json');
 
 export interface AppSettings {
   GCP_PROJECT_ID?: string;

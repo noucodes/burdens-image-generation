@@ -1,6 +1,38 @@
+import { existsSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { GoogleAuth } from 'google-auth-library';
 import axios from 'axios';
-import { getSetting } from './settings';
+import { getSetting, writableDir } from './settings';
+
+/**
+ * Resolve the path to the GCP credentials JSON file.
+ * If GCP_CREDENTIALS_JSON env var is set (raw JSON or base64), write it to /tmp
+ * and return that path — this is the Vercel/serverless deployment pattern.
+ */
+function resolveCredentialsPath(): string | undefined {
+  const inline = process.env.GCP_CREDENTIALS_JSON;
+  if (inline) {
+    const tmpPath = join(writableDir(), 'gcp-credentials.json');
+    if (!existsSync(tmpPath)) {
+      let json = inline;
+      try {
+        // Accept plain JSON or base64-encoded JSON
+        const decoded = Buffer.from(inline, 'base64').toString('utf8');
+        JSON.parse(decoded);
+        json = decoded;
+      } catch { /* not base64, use as-is */ }
+      writeFileSync(tmpPath, json, 'utf8');
+    }
+    return tmpPath;
+  }
+  const configured = getSetting('GOOGLE_APPLICATION_CREDENTIALS');
+  if (!configured) return undefined;
+  // Resolve relative paths against writableDir so they work in serverless
+  if (configured.startsWith('.')) {
+    return join(writableDir(), configured.replace(/^\.\//, ''));
+  }
+  return configured;
+}
 
 const MODEL_ID = 'gemini-2.5-flash-image';
 
@@ -54,7 +86,7 @@ export class GeminiImageClient {
   constructor() {
     const projectId = getSetting('GCP_PROJECT_ID');
     const region = getSetting('GCP_REGION') || 'us-central1';
-    const credPath = getSetting('GOOGLE_APPLICATION_CREDENTIALS');
+    const credPath = resolveCredentialsPath();
 
     if (!projectId) {
       throw new Error(
@@ -63,7 +95,7 @@ export class GeminiImageClient {
     }
     if (!credPath) {
       throw new Error(
-        'GOOGLE_APPLICATION_CREDENTIALS is not configured. Upload your credentials JSON in Settings'
+        'GOOGLE_APPLICATION_CREDENTIALS is not configured. Upload your credentials JSON in Settings, or set GCP_CREDENTIALS_JSON env var'
       );
     }
 

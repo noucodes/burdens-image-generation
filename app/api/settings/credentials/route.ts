@@ -1,6 +1,6 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { getSetting, saveSettings } from '@/lib/settings';
+import { getSetting, saveSettings, writableDir } from '@/lib/settings';
 
 export const runtime = 'nodejs';
 
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
 
     const credPath = getSetting('GOOGLE_APPLICATION_CREDENTIALS') || './gcp-credentials.json';
     const absPath = credPath.startsWith('.')
-      ? join(process.cwd(), credPath.replace(/^\.\//, ''))
+      ? join(writableDir(), credPath.replace(/^\.\//, ''))
       : credPath;
 
     writeFileSync(absPath, text, 'utf8');
