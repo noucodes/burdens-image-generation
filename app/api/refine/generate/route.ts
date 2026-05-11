@@ -80,9 +80,8 @@ export async function POST(req: Request) {
           }
         }
 
-        const INTERVAL_MS = 7_500;
-        const BASE_BACKOFF_MS = 65_000;
-        const MAX_RL_RETRIES = 1;
+        const INTERVAL_MS = 2_000;
+        const BACKOFF_MS = 65_000;
 
         let generated = 0;
 
@@ -90,7 +89,7 @@ export async function POST(req: Request) {
           if (aborted) break;
           log(`Generating candidate ${i}/${count}... `);
 
-          let rlRetries = 0;
+          let rlRetried = false;
           let done = false;
           while (!done && !aborted) {
             try {
@@ -115,11 +114,11 @@ export async function POST(req: Request) {
             } catch (err) {
               if (err instanceof RateLimitError) {
                 if (err.scope === 'per_day') { log(`daily quota hit\n`); aborted = true; break; }
-                if (rlRetries >= MAX_RL_RETRIES) { log(`rate-limited too many times, skipping\n`); done = true; break; }
-                const backoff = (err.retryAfterSeconds ?? 0) * 1000 || BASE_BACKOFF_MS * Math.pow(2, rlRetries);
-                rlRetries++;
-                log(`rate-limited (${rlRetries}/${MAX_RL_RETRIES}), waiting ${Math.round(backoff / 1000)}s\n`);
-                await new Promise<void>((r) => setTimeout(r, backoff));
+                if (rlRetried) { log(`still rate-limited, skipping\n`); done = true; break; }
+                const wait = (err.retryAfterSeconds ?? 0) * 1000 || BACKOFF_MS;
+                log(`rate-limited, waiting ${Math.round(wait / 1000)}s\n`);
+                rlRetried = true;
+                await new Promise<void>((r) => setTimeout(r, wait));
               } else if (err instanceof AccessError) {
                 log(`ACCESS ERROR: ${err.message}\n`);
                 if (err.hint) log(`hint: ${err.hint}\n`);
@@ -136,9 +135,7 @@ export async function POST(req: Request) {
           }
 
           if (aborted) break;
-          if (i < count) {
-            await new Promise<void>((r) => setTimeout(r, INTERVAL_MS));
-          }
+          if (i < count) await new Promise<void>((r) => setTimeout(r, INTERVAL_MS));
         }
 
         log(`\nDone — ${generated}/${count} generated in round-${roundNum}\n`);
