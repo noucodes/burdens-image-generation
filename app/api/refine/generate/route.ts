@@ -80,47 +80,64 @@ export async function POST(req: Request) {
           }
         }
 
+        const INTERVAL_MS = 7_500;
+        const BASE_BACKOFF_MS = 65_000;
+        const MAX_RL_RETRIES = 4;
+
         let generated = 0;
 
         for (let i = 1; i <= count; i++) {
           if (aborted) break;
           log(`Generating candidate ${i}/${count}... `);
-          try {
-            // Text-only when no anchor; anchor image becomes the input reference when provided
-            const result = await client.generate({
-              prompt,
-              referenceImageUrl: anchorStyleRef
-                ? `data:${anchorStyleRef.mimeType};base64,${anchorStyleRef.base64}`
-                : undefined,
-            });
 
-            const filename = `candidate-${i}.jpg`;
-            const outputPath = join(roundDir, filename);
+          let rlRetries = 0;
+          let done = false;
+          while (!done && !aborted) {
+            try {
+              const result = await client.generate({
+                prompt,
+                referenceImageUrl: anchorStyleRef
+                  ? `data:${anchorStyleRef.mimeType};base64,${anchorStyleRef.base64}`
+                  : undefined,
+              });
 
-            await sharp(result.imageBytes)
-              .resize(1024, 1024, { fit: 'cover' })
-              .jpeg({ quality: 90 })
-              .toFile(outputPath);
+              const filename = `candidate-${i}.jpg`;
+              const outputPath = join(roundDir, filename);
 
-            log(`done → ${filename}\n`);
-            generated++;
-          } catch (err) {
-            if (err instanceof RateLimitError) {
-              log(`rate-limited (${err.scope})\n`);
-              if (err.scope === 'per_day') break;
-            } else if (err instanceof AccessError) {
-              log(`ACCESS ERROR: ${err.message}\n`);
-              if (err.hint) log(`hint: ${err.hint}\n`);
-              break;
-            } else if (err instanceof GenerationBlockedError) {
-              log(`blocked: ${err.reason}\n`);
-            } else {
-              log(`error: ${(err as Error).message}\n`);
+              await sharp(result.imageBytes)
+                .resize(1024, 1024, { fit: 'cover' })
+                .jpeg({ quality: 90 })
+                .toFile(outputPath);
+
+              log(`done → ${filename}\n`);
+              generated++;
+              done = true;
+            } catch (err) {
+              if (err instanceof RateLimitError) {
+                if (err.scope === 'per_day') { log(`daily quota hit\n`); aborted = true; break; }
+                if (rlRetries >= MAX_RL_RETRIES) { log(`rate-limited too many times, skipping\n`); done = true; break; }
+                const backoff = (err.retryAfterSeconds ?? 0) * 1000 || BASE_BACKOFF_MS * Math.pow(2, rlRetries);
+                rlRetries++;
+                log(`rate-limited (${rlRetries}/${MAX_RL_RETRIES}), waiting ${Math.round(backoff / 1000)}s\n`);
+                await new Promise<void>((r) => setTimeout(r, backoff));
+              } else if (err instanceof AccessError) {
+                log(`ACCESS ERROR: ${err.message}\n`);
+                if (err.hint) log(`hint: ${err.hint}\n`);
+                aborted = true;
+                break;
+              } else if (err instanceof GenerationBlockedError) {
+                log(`blocked: ${err.reason}\n`);
+                done = true;
+              } else {
+                log(`error: ${(err as Error).message}\n`);
+                done = true;
+              }
             }
           }
 
-          if (i < count && !aborted) {
-            await new Promise<void>((r) => setTimeout(r, 6_000));
+          if (aborted) break;
+          if (i < count) {
+            await new Promise<void>((r) => setTimeout(r, INTERVAL_MS));
           }
         }
 

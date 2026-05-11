@@ -13,9 +13,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const AI_GENERATABLE_SLOTS: ImageSlot[] = [2, 3];
-const REQUEST_INTERVAL_MS = 6_000;
-const PER_MINUTE_BACKOFF_MS = 70_000;
-const MAX_RETRIES_PER_ITEM = 2;
+const REQUEST_INTERVAL_MS = 7_500;   // ~8 RPM — safely under the 10 RPM free-tier limit
+const PER_MINUTE_BACKOFF_MS = 65_000; // base wait on per-minute rate limit
+const MAX_RETRIES_PER_ITEM = 2;       // max error retries (not rate-limit retries)
+const MAX_RATE_LIMIT_RETRIES = 4;     // max times to back off and retry a single item
 
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
@@ -119,6 +120,7 @@ async function runGenerationBackground(options: { type: string; limit: number; m
       }
 
       let attempt = 0;
+      let rlRetries = 0;
       let succeeded = false;
 
       while (attempt <= MAX_RETRIES_PER_ITEM && !succeeded && !state.abortRequested) {
@@ -135,10 +137,17 @@ async function runGenerationBackground(options: { type: string; limit: number; m
         } catch (err) {
           if (err instanceof RateLimitError) {
             if (err.scope === 'per_day') { appendLog('DAILY QUOTA HIT\n'); stoppedEarly = true; break; }
-            const waitMs = (err.retryAfterSeconds ?? 0) * 1000 || PER_MINUTE_BACKOFF_MS;
-            appendLog(`rate-limited, waiting ${Math.round(waitMs / 1000)}s\n`);
-            await sleep(waitMs);
-            attempt--;
+            if (rlRetries >= MAX_RATE_LIMIT_RETRIES) {
+              appendLog(`rate-limited too many times, skipping\n`);
+              checkpoint.markError(row.sku, slot, 'Rate limited — max retries exceeded');
+              break;
+            }
+            // Exponential backoff: 65s, 130s, 260s, 520s
+            const backoff = (err.retryAfterSeconds ?? 0) * 1000 || PER_MINUTE_BACKOFF_MS * Math.pow(2, rlRetries);
+            rlRetries++;
+            appendLog(`rate-limited (${rlRetries}/${MAX_RATE_LIMIT_RETRIES}), waiting ${Math.round(backoff / 1000)}s\n`);
+            await sleep(backoff);
+            attempt--; // don't count rate-limit waits as error retries
             continue;
           }
           if (err instanceof AccessError) {
