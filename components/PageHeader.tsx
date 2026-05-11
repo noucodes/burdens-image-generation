@@ -20,7 +20,7 @@ export default function PageHeader({ title, subtitle, actions, sticky }: Props) 
 
   if (sticky) {
     return (
-      <header className="sticky top-0 z-10 bg-white border-b border-gray-200 shadow-sm">
+      <header className="sticky top-0 z-10 backdrop-blur-md shadow-sm">
         <div className="max-w-5xl mx-auto px-8 py-4">
           {inner}
         </div>
