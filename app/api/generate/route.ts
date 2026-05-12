@@ -13,7 +13,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const AI_GENERATABLE_SLOTS: ImageSlot[] = [2, 3];
-const REQUEST_INTERVAL_MS = 7_000;   // ~8 RPM default — increase quota in GCP Console to speed up
+const REQUEST_INTERVAL_MS = 32_000;
 const PER_MINUTE_BACKOFF_MS = 70_000;
 const MAX_RETRIES_PER_ITEM = 2;
 
@@ -136,7 +136,7 @@ async function runGenerationBackground(options: { type: string; limit: number; m
           if (err instanceof RateLimitError) {
             if (err.scope === 'per_day') { appendLog('DAILY QUOTA HIT\n'); stoppedEarly = true; break; }
             const waitMs = (err.retryAfterSeconds ?? 0) * 1000 || PER_MINUTE_BACKOFF_MS;
-            appendLog(`rate-limited, waiting ${Math.round(waitMs / 1000)}s\n`);
+            appendLog(`rate-limited (${err.message}), waiting ${Math.round(waitMs / 1000)}s\n`);
             await sleep(waitMs);
             attempt--;
             continue;

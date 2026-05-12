@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import PageHeader from '@/components/PageHeader';
 
 interface SettingsData {
+  GEMINI_API_KEY: string;
   GCP_PROJECT_ID: string;
   GCP_REGION: string;
   GOOGLE_APPLICATION_CREDENTIALS: string;
@@ -13,6 +14,7 @@ interface SettingsData {
 
 interface TestResult {
   ok: boolean;
+  backend?: string;
   step?: string;
   error?: string;
   hint?: string;
@@ -56,7 +58,7 @@ function StatusDot({ status }: { status: 'missing' | 'found' | 'invalid' }) {
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [form, setForm] = useState({ GCP_PROJECT_ID: '', GCP_REGION: 'us-central1', GOOGLE_APPLICATION_CREDENTIALS: './gcp-credentials.json' });
+  const [form, setForm] = useState({ GEMINI_API_KEY: '', GCP_PROJECT_ID: '', GCP_REGION: 'us-central1', GOOGLE_APPLICATION_CREDENTIALS: './gcp-credentials.json' });
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -71,6 +73,7 @@ export default function SettingsPage() {
       const data = await res.json() as SettingsData;
       setSettings(data);
       setForm({
+        GEMINI_API_KEY: data.GEMINI_API_KEY,
         GCP_PROJECT_ID: data.GCP_PROJECT_ID,
         GCP_REGION: data.GCP_REGION,
         GOOGLE_APPLICATION_CREDENTIALS: data.GOOGLE_APPLICATION_CREDENTIALS,
@@ -142,9 +145,39 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* AI Studio (free) */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-semibold text-gray-800">Google AI Studio</h3>
+          <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">Free tier · recommended</span>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">
+          10–15 RPM free. Get a key at{' '}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">
+            aistudio.google.com/apikey
+          </a>
+          {' '}— no billing required. When set, this takes priority over Vertex AI.
+        </p>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          API Key
+          {settings && <SourceBadge source={settings.sources.GEMINI_API_KEY as 'env' | 'settings' | 'none'} />}
+        </label>
+        <input
+          type="password"
+          value={form.GEMINI_API_KEY}
+          onChange={(e) => setForm((f) => ({ ...f, GEMINI_API_KEY: e.target.value }))}
+          placeholder="AIza…"
+          disabled={settings?.sources.GEMINI_API_KEY === 'env'}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:bg-gray-50 disabled:text-gray-400"
+        />
+      </div>
+
       {/* GCP Settings */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-5">
-        <h3 className="font-semibold text-gray-800 mb-4">Google Cloud Platform</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-gray-800">Vertex AI (service account)</h3>
+          <span className="text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-medium">fallback if no API key</span>
+        </div>
 
         <div className="space-y-4">
           <div>
@@ -288,7 +321,11 @@ export default function SettingsPage() {
             {testResult.ok ? (
               <div>
                 <p className="font-semibold text-green-800">Connection successful</p>
-                <p className="text-green-700 mt-1">Project: {testResult.projectId} · Region: {testResult.region}</p>
+                <p className="text-green-700 mt-1">
+                  {testResult.backend ?? 'Vertex AI'}
+                  {testResult.projectId && ` · Project: ${testResult.projectId}`}
+                  {testResult.region && ` · Region: ${testResult.region}`}
+                </p>
               </div>
             ) : (
               <div className="space-y-1">

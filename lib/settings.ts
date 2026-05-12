@@ -16,6 +16,8 @@ export function writableDir(): string {
 const SETTINGS_PATH = join(writableDir(), 'settings.json');
 
 export interface AppSettings {
+  /** Google AI Studio API key — free tier, simpler auth. Takes priority over Vertex AI when set. */
+  GEMINI_API_KEY?: string;
   GCP_PROJECT_ID?: string;
   GCP_REGION?: string;
   /** Path to the GCP service account JSON key file, relative to project root */

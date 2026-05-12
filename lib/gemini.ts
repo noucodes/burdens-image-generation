@@ -4,37 +4,10 @@ import { GoogleAuth } from 'google-auth-library';
 import axios from 'axios';
 import { getSetting, writableDir } from './settings';
 
-/**
- * Resolve the path to the GCP credentials JSON file.
- * If GCP_CREDENTIALS_JSON env var is set (raw JSON or base64), write it to /tmp
- * and return that path — this is the Vercel/serverless deployment pattern.
- */
-function resolveCredentialsPath(): string | undefined {
-  const inline = process.env.GCP_CREDENTIALS_JSON;
-  if (inline) {
-    const tmpPath = join(writableDir(), 'gcp-credentials.json');
-    if (!existsSync(tmpPath)) {
-      let json = inline;
-      try {
-        // Accept plain JSON or base64-encoded JSON
-        const decoded = Buffer.from(inline, 'base64').toString('utf8');
-        JSON.parse(decoded);
-        json = decoded;
-      } catch { /* not base64, use as-is */ }
-      writeFileSync(tmpPath, json, 'utf8');
-    }
-    return tmpPath;
-  }
-  const configured = getSetting('GOOGLE_APPLICATION_CREDENTIALS');
-  if (!configured) return undefined;
-  // Resolve relative paths against writableDir so they work in serverless
-  if (configured.startsWith('.')) {
-    return join(writableDir(), configured.replace(/^\.\//, ''));
-  }
-  return configured;
-}
-
-const MODEL_ID = 'gemini-2.5-flash-image';
+// AI Studio (free tier) model — supports image output via responseModalities
+const AI_STUDIO_MODEL = 'gemini-2.0-flash-preview-image-generation';
+// Vertex AI model (paid / service account)
+const VERTEX_MODEL = 'gemini-2.5-flash-image';
 
 export interface GenerateImageParams {
   prompt: string;
@@ -78,33 +51,66 @@ export class AccessError extends Error {
   }
 }
 
+/**
+ * Resolve the path to the GCP credentials JSON file.
+ * If GCP_CREDENTIALS_JSON env var is set (raw JSON or base64), write it to /tmp
+ * and return that path — this is the Vercel/serverless deployment pattern.
+ */
+function resolveCredentialsPath(): string | undefined {
+  const inline = process.env.GCP_CREDENTIALS_JSON;
+  if (inline) {
+    const tmpPath = join(writableDir(), 'gcp-credentials.json');
+    if (!existsSync(tmpPath)) {
+      let json = inline;
+      try {
+        const decoded = Buffer.from(inline, 'base64').toString('utf8');
+        JSON.parse(decoded);
+        json = decoded;
+      } catch { /* not base64, use as-is */ }
+      writeFileSync(tmpPath, json, 'utf8');
+    }
+    return tmpPath;
+  }
+  const configured = getSetting('GOOGLE_APPLICATION_CREDENTIALS');
+  if (!configured) return undefined;
+  if (configured.startsWith('.')) {
+    return join(writableDir(), configured.replace(/^\.\//, ''));
+  }
+  return configured;
+}
+
 export class GeminiImageClient {
-  private auth: GoogleAuth;
-  private projectId: string;
+  private apiKey: string | undefined;
+  private auth: GoogleAuth | undefined;
+  private projectId: string | undefined;
   private region: string;
 
   constructor() {
-    const projectId = getSetting('GCP_PROJECT_ID');
-    const region = getSetting('GCP_REGION') || 'us-central1';
-    const credPath = resolveCredentialsPath();
+    this.apiKey = getSetting('GEMINI_API_KEY');
+    this.region = getSetting('GCP_REGION') || 'us-central1';
 
-    if (!projectId) {
-      throw new Error(
-        'GCP_PROJECT_ID is not configured. Add it in Settings or .env.local'
-      );
-    }
-    if (!credPath) {
-      throw new Error(
-        'GOOGLE_APPLICATION_CREDENTIALS is not configured. Upload your credentials JSON in Settings, or set GCP_CREDENTIALS_JSON env var'
-      );
-    }
+    if (!this.apiKey) {
+      // Fall back to Vertex AI
+      const projectId = getSetting('GCP_PROJECT_ID');
+      const credPath = resolveCredentialsPath();
 
-    this.projectId = projectId;
-    this.region = region;
-    this.auth = new GoogleAuth({
-      keyFile: credPath,
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-    });
+      if (!projectId) {
+        throw new Error(
+          'No GEMINI_API_KEY set. Alternatively, configure GCP_PROJECT_ID + credentials in Settings.'
+        );
+      }
+      if (!credPath) {
+        throw new Error(
+          'No GEMINI_API_KEY set. Alternatively, upload a GCP service account JSON in Settings.'
+        );
+      }
+
+      this.projectId = projectId;
+      this.auth = new GoogleAuth({
+        keyFile: credPath,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+      });
+    }
   }
 
   async generate({
@@ -143,12 +149,36 @@ export class GeminiImageClient {
       });
     }
 
-    const endpoint =
-      `https://${this.region}-aiplatform.googleapis.com/v1/` +
-      `projects/${this.projectId}/locations/${this.region}/` +
-      `publishers/google/models/${MODEL_ID}:generateContent`;
+    if (this.apiKey) {
+      return this.generateViaAiStudio(parts);
+    }
+    return this.generateViaVertex(parts);
+  }
 
-    const client = await this.auth.getClient();
+  private async generateViaAiStudio(parts: Record<string, unknown>[]): Promise<GenerateImageResult> {
+    const endpoint =
+      `https://generativelanguage.googleapis.com/v1beta/models/` +
+      `${AI_STUDIO_MODEL}:generateContent?key=${this.apiKey}`;
+
+    let response;
+    try {
+      response = await axios.post(
+        endpoint,
+        {
+          contents: [{ role: 'user', parts }],
+          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 120_000 }
+      );
+    } catch (err: unknown) {
+      throw this.classifyError(err, 'AI Studio');
+    }
+
+    return this.extractImage(response.data, AI_STUDIO_MODEL, 'AI Studio');
+  }
+
+  private async generateViaVertex(parts: Record<string, unknown>[]): Promise<GenerateImageResult> {
+    const client = await this.auth!.getClient();
     const tokenResponse = await client.getAccessToken();
     const token = tokenResponse.token;
     if (!token) {
@@ -159,51 +189,55 @@ export class GeminiImageClient {
       );
     }
 
+    const endpoint =
+      `https://${this.region}-aiplatform.googleapis.com/v1/` +
+      `projects/${this.projectId}/locations/${this.region}/` +
+      `publishers/google/models/${VERTEX_MODEL}:generateContent`;
+
     let response;
     try {
       response = await axios.post(
         endpoint,
         { contents: [{ role: 'user', parts }] },
         {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           timeout: 120_000,
         }
       );
     } catch (err: unknown) {
-      throw this.classifyError(err);
+      throw this.classifyError(err, 'Vertex AI');
     }
 
-    const candidate = response.data?.candidates?.[0];
-    const finishReason = candidate?.finishReason;
+    return this.extractImage(response.data, VERTEX_MODEL, 'Vertex AI');
+  }
+
+  private extractImage(data: Record<string, unknown>, modelId: string, backend: string): GenerateImageResult {
+    const candidate = (data?.candidates as Record<string, unknown>[])?.[0];
+    const finishReason = candidate?.finishReason as string | undefined;
 
     if (finishReason && finishReason !== 'STOP') {
-      throw new GenerationBlockedError(
-        `Generation stopped with reason: ${finishReason}`,
-        finishReason
-      );
+      throw new GenerationBlockedError(`Generation stopped with reason: ${finishReason}`, finishReason);
     }
 
-    const responseParts = candidate?.content?.parts ?? [];
+    const responseParts = (candidate?.content as Record<string, unknown>)?.parts as Record<string, unknown>[] ?? [];
     for (const part of responseParts) {
-      if (part.inlineData?.data) {
+      const inlineData = part.inlineData as Record<string, string> | undefined;
+      if (inlineData?.data) {
         return {
-          imageBytes: Buffer.from(part.inlineData.data, 'base64'),
-          mimeType: part.inlineData.mimeType || 'image/png',
-          modelVersion: MODEL_ID,
+          imageBytes: Buffer.from(inlineData.data, 'base64'),
+          mimeType: inlineData.mimeType || 'image/png',
+          modelVersion: modelId,
         };
       }
     }
 
     throw new Error(
-      'Vertex returned no image data. ' +
-      `Text response (if any): ${responseParts.map((p: Record<string, unknown>) => p.text).filter(Boolean).join(' ') || '(none)'}`
+      `${backend} returned no image data. ` +
+      `Text response (if any): ${responseParts.map((p) => p.text).filter(Boolean).join(' ') || '(none)'}`
     );
   }
 
-  private classifyError(err: unknown): Error {
+  private classifyError(err: unknown, backend: string): Error {
     const e = err as { response?: { status: number; data?: { error?: { message?: string } } }; message?: string };
     const status = e?.response?.status;
     const data = e?.response?.data;
@@ -218,11 +252,13 @@ export class GeminiImageClient {
     }
 
     if (status === 401 || status === 403) {
-      let hint = 'Check service account roles in GCP Console.';
+      let hint = `Check your ${backend} credentials/permissions.`;
       if (/billing/i.test(message)) {
-        hint = 'Billing may not be enabled. Visit https://console.cloud.google.com/billing';
+        hint = 'Billing may not be enabled on your GCP project.';
       } else if (/permission|forbidden/i.test(message)) {
-        hint = 'Service account is missing the "Vertex AI User" role.';
+        hint = backend === 'Vertex AI'
+          ? 'Service account is missing the "Vertex AI User" role.'
+          : 'Check that your GEMINI_API_KEY is valid and not expired.';
       }
       return new AccessError(`${status}: ${message}`, hint);
     }
@@ -230,8 +266,9 @@ export class GeminiImageClient {
     if (status === 404 || /model.*not.*found|not.*available.*region/i.test(message)) {
       return new AccessError(
         message,
-        `Model ${MODEL_ID} may not be available in region ${this.region}. ` +
-        `Try GCP_REGION=us-central1.`
+        backend === 'Vertex AI'
+          ? `Model may not be available in region ${this.region}. Try us-central1.`
+          : `Model ${AI_STUDIO_MODEL} may not be available yet. Check aistudio.google.com.`
       );
     }
 
