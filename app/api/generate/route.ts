@@ -13,7 +13,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const AI_GENERATABLE_SLOTS: ImageSlot[] = [2, 3];
-const REQUEST_INTERVAL_MS = 2_000;   // ~30 RPM — suitable for paid/credit accounts; reduce if still rate-limited
+const REQUEST_INTERVAL_MS = 7_000;   // ~8 RPM default — increase quota in GCP Console to speed up
 const PER_MINUTE_BACKOFF_MS = 70_000;
 const MAX_RETRIES_PER_ITEM = 2;
 

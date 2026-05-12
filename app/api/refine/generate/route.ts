@@ -80,7 +80,7 @@ export async function POST(req: Request) {
           }
         }
 
-        const INTERVAL_MS = 2_000;
+        const INTERVAL_MS = 7_000;   // match generate route; increase after GCP quota increase
         const BACKOFF_MS = 65_000;
 
         let generated = 0;
